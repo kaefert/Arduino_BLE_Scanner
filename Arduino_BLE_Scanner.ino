@@ -7,8 +7,7 @@
 #define WIFI_PASSWORD "YOURAPPASSWORD"
 #define POST_URL "http://YOURSERVERNAMEORIP:3000/"
 #define SCAN_TIME  30 // seconds
-#define WAIT_WIFI_LOOP 5 // around 4 seconds for 1 loop
-#define SLEEP_TIME  300 // seconds
+#define SLEEP_TIME  0 // seconds
 // comment the follow line to disable serial message
 #define SERIAL_PRINT
 
@@ -22,7 +21,6 @@
 
 #include <WiFi.h>
 #include <WiFiMulti.h>
-#include <esp_wifi.h>
 
 #include <HTTPClient.h>
 
@@ -30,9 +28,15 @@
 #include "soc/rtc_cntl_reg.h"
 
 WiFiMulti wifiMulti;
-std::stringstream ss;
-bool data_sent = false;
-int wait_wifi_counter = 0;
+
+void httpPostData(String postData) {
+  HTTPClient http;
+  http.begin(POST_URL);
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  http.POST(postData);
+  http.writeToStream(&Serial);
+  http.end();
+}
 
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks
 {
@@ -41,81 +45,47 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks
 #ifdef SERIAL_PRINT
       Serial.printf("Advertised Device: %s \n", advertisedDevice.toString().c_str());
 #endif
+      std::stringstream ss;
+      ss << "deviceName=" << advertisedDevice.getName() << "&address=" << advertisedDevice.getAddress().toString();
+      if (advertisedDevice.haveAppearance()) {
+        ss << "&appearance=" << advertisedDevice.getAppearance();
+      }
+      if (advertisedDevice.haveManufacturerData()) {
+        char *pHex = BLEUtils::buildHexData(nullptr, (uint8_t*)advertisedDevice.getManufacturerData().data(), advertisedDevice.getManufacturerData().length());
+        ss << "&manufacturerData=" << pHex;
+        free(pHex);
+      }
+      if (advertisedDevice.haveServiceUUID()) {
+        ss << "&serviceUUID=" << advertisedDevice.getServiceUUID().toString();
+      }
+      if (advertisedDevice.haveServiceData()) {
+        ss << "&serviceData=" << advertisedDevice.getServiceData();
+      }
+      if (advertisedDevice.haveTXPower()) {
+        ss << "&txPower=" << (int)advertisedDevice.getTXPower();
+      }
+      if (advertisedDevice.haveRSSI()) {
+        ss << "&RSSI=" << (int)advertisedDevice.getRSSI();
+      }
+      httpPostData(ss.str().c_str());
+      //httpPostData("deviceName=" + advertisedDevice.getName()
+      //+ "&address=" + advertisedDevice.getAddress()
+      //+ "&getServiceUUID=" + advertisedDevice.getServiceUUID());
     }
 };
 
 void setup()
 {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
-  esp_wifi_stop();
 
 #ifdef SERIAL_PRINT
   Serial.begin(115200);
-  Serial.println("ESP32 BLE Scanner");
-#endif
-
-  BLEDevice::init("");
-
-  // put your main code here, to run repeatedly:
-  BLEScan *pBLEScan = BLEDevice::getScan(); //create new scan
-  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setActiveScan(true); //active scan uses more power, but get results faster
-  pBLEScan->setInterval(0x50);
-  pBLEScan->setWindow(0x30);
-
-#ifdef SERIAL_PRINT
-  Serial.printf("Start BLE scan for %d seconds...\n", SCAN_TIME);
-#endif
-
-  BLEScanResults foundDevices = pBLEScan->start(SCAN_TIME);
-  int count = foundDevices.getCount();
-  ss << "[";
-  for (int i = 0; i < count; i++)
-  {
-    if (i > 0) {
-      ss << ",";
-    }
-    BLEAdvertisedDevice d = foundDevices.getDevice(i);
-    ss << "{\"Address\":\"" << d.getAddress().toString() << "\",\"Rssi\":" << d.getRSSI();
-
-    if (d.haveName())
-    {
-      ss << ",\"Name\":\"" << d.getName() << "\"";
-    }
-
-    if (d.haveAppearance())
-    {
-      ss << ",\"Appearance\":" << d.getAppearance();
-    }
-
-    if (d.haveManufacturerData())
-    {
-      std::string md = d.getManufacturerData();
-      uint8_t* mdp = (uint8_t*)d.getManufacturerData().data();
-      char *pHex = BLEUtils::buildHexData(nullptr, mdp, md.length());
-      ss << ",\"ManufacturerData\":\"" << pHex << "\"";
-      free(pHex);
-    }
-
-    if (d.haveServiceUUID())
-    {
-      ss << ",\"ServiceUUID\":\"" << d.getServiceUUID().toString() << "\"" ;
-    }
-
-    if (d.haveTXPower())
-    {
-      ss << ",\"TxPower\":" << (int)d.getTXPower();
-    }
-
-    ss << "}";
-  }
-  ss << "]";
-
-#ifdef SERIAL_PRINT
-  Serial.println("Scan done!");
+  Serial.println("ESP32 BLE Scanner - Setup started");
 #endif
 
   wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
+
+  BLEDevice::init("");
 }
 
 void loop()
@@ -125,7 +95,69 @@ void loop()
   {
 #ifdef SERIAL_PRINT
     Serial.println("WiFi Connected");
+    Serial.println(WiFi.localIP());
 #endif
+
+    // put your main code here, to run repeatedly:
+    BLEScan *pBLEScan = BLEDevice::getScan(); //create new scan
+    pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+    pBLEScan->setActiveScan(true); //active scan uses more power, but get results faster
+    pBLEScan->setInterval(0x50);
+    pBLEScan->setWindow(0x30);
+
+#ifdef SERIAL_PRINT
+    Serial.printf("Start BLE scan for %d seconds...\n", SCAN_TIME);
+#endif
+
+    BLEScanResults foundDevices = pBLEScan->start(SCAN_TIME);
+    int count = foundDevices.getCount();
+    std::stringstream ss;
+    ss << "BLEScanData=[";
+    for (int i = 0; i < count; i++)
+    {
+      if (i > 0) {
+        ss << ",";
+      }
+      BLEAdvertisedDevice d = foundDevices.getDevice(i);
+      ss << "{\"Address\":\"" << d.getAddress().toString() << "\",\"Rssi\":" << d.getRSSI();
+
+      if (d.haveName())
+      {
+        ss << ",\"Name\":\"" << d.getName() << "\"";
+      }
+
+      if (d.haveAppearance())
+      {
+        ss << ",\"Appearance\":" << d.getAppearance();
+      }
+
+      if (d.haveManufacturerData())
+      {
+        std::string md = d.getManufacturerData();
+        uint8_t* mdp = (uint8_t*)d.getManufacturerData().data();
+        char *pHex = BLEUtils::buildHexData(nullptr, mdp, md.length());
+        ss << ",\"ManufacturerData\":\"" << pHex << "\"";
+        free(pHex);
+      }
+
+      if (d.haveServiceUUID())
+      {
+        ss << ",\"ServiceUUID\":\"" << d.getServiceUUID().toString() << "\"" ;
+      }
+
+      if (d.haveTXPower())
+      {
+        ss << ",\"TxPower\":" << (int)d.getTXPower();
+      }
+
+      ss << "}";
+    }
+    ss << "]";
+
+#ifdef SERIAL_PRINT
+    Serial.println("Scan done!");
+#endif
+
     // HTTP POST BLE list
     HTTPClient http;
 
@@ -153,7 +185,9 @@ void loop()
       if (httpCode == HTTP_CODE_OK)
       {
 #ifdef SERIAL_PRINT
+        Serial.println("[HTTP] will print http response now:");
         Serial.println(http.getString());
+        Serial.println("[HTTP] end of http response, continue (deep sleep next?)");
 #endif
       }
     }
@@ -165,24 +199,23 @@ void loop()
     }
 
     http.end();
-    data_sent = true;
-  }
 
-  // wait WiFi connected
-  if (data_sent || (wait_wifi_counter > WAIT_WIFI_LOOP)) {
+#if SLEEP_TIME > 0
     esp_sleep_enable_timer_wakeup(SLEEP_TIME * 1000000); // translate second to micro second
 
 #ifdef SERIAL_PRINT
-    Serial.printf("Enter deep sleep for %d seconds...\n", SLEEP_TIME);
+    Serial.printf("Enter deep sleep for %d seconds...\n", (SLEEP_TIME));
 #endif
 
-    esp_wifi_stop();
     esp_deep_sleep_start();
-  } else {
-    wait_wifi_counter++;
+#endif
+}
+
 
 #ifdef SERIAL_PRINT
-    Serial.printf("Waiting count: %d\n", wait_wifi_counter);
+    Serial.println("End of code loop, delay 1000");
 #endif
-  }
+
+  // wait WiFi connected
+  delay(1000);
 }
